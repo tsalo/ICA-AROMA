@@ -42,13 +42,28 @@ def motpars_afni2fsl(motpars):
     return motpars_fsl
 
 
-def determine_motpar_source(file_):
-    if file_.startswith('rp_') and file_.endswith('.txt'):
-        return 'spm'
-    elif file_.endswith('.1D'):
-        return 'afni'
-    elif file_.endswith('.txt'):
-        return 'fsl'
+def load_motpars(file_, source='auto'):
+    """
+    Load motion parameters from file.
+    """
+    if source == 'auto':
+        if file_.startswith('rp_') and file_.endswith('.txt'):
+            source = 'spm'
+        elif file_.endswith('.1D'):
+            source = 'afni'
+        elif file_.endswith('.txt'):
+            source = 'fsl'
+
+    if source == 'spm':
+        motpars = motpars_spm2fsl(file_)
+    elif source == 'afni':
+        motpars = motpars_afni2fsl(file_)
+    elif source == 'fsl':
+        motpars = np.loadtxt(file_)
+    else:
+        raise ValueError('Source "{0}" not supported.'.format(source))
+
+    return motpars
 
 
 def cross_correlation(a, b):
