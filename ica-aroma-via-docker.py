@@ -1,4 +1,5 @@
 from __future__ import print_function
+
 # Simple wrapper for the ICA-AROMA python scripts, to hand them absolute paths.
 # Required to make the tool work in cbrain via the docker container
 
@@ -18,7 +19,5 @@ mod_args[targ_ind] = os.path.abspath(mod_args[targ_ind])
 # Call the ICA-AROMA process
 cmd = "python /ICA-AROMA/ICA_AROMA.py " + " ".join(mod_args)
 print("Running: " + cmd + "\n")
-process = Popen( cmd.split() ) 
-sys.exit( process.wait() )
-
-
+process = Popen(cmd.split())
+sys.exit(process.wait())
