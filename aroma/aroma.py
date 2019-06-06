@@ -39,13 +39,15 @@ def run_aroma(mix_file, z_maps_file, motpars_file, t_r):
     assert z_maps.shape[-1] == mix.shape[1]
     assert mix.shape[0] == rp6.shape[0]
 
+    df = pd.DataFrame(index=np.arange(mix.shape[1]).astype(int))
+
     ft_data, freqs = get_spectrum(mix, t_r)
-    max_rp_corr = features.feature_time_series(mix, rp6)
-    HFC = feature_frequency(ft_data, freqs, t_r)
-    edge_fract, csf_fract = feature_spatial(
+    df['max_rp_corr'] = features.feature_time_series(mix, rp6)
+    df['HFC'] = feature_frequency(ft_data, freqs, t_r)
+    df['edge_fract'], df['csf_fract'] = feature_spatial(
         z_maps, csf_mask="auto", out_mask="auto", edge_mask="auto")
-    classifications = classify(max_rp_corr, edge_fract, HFC, csf_fract)
-    return classifications
+    df = classify(df)
+    return df
 
 
 def runICA(fslDir, inFile, outDir, melDirIn, mask, dim, TR):
@@ -331,7 +333,7 @@ def register2MNI(fslDir, inFile, outFile, affmat, warp):
         )
 
 
-def classify(maxRPcorr, edgeFract, HFC, csfFract):
+def classify(df):
     """
     This function classifies a set of components into motion and
     non-motion components based on four features;
@@ -354,7 +356,8 @@ def classify(maxRPcorr, edgeFract, HFC, csfFract):
     classified_motion_ICs.txt   A text file containing the indices of the
     components identified as motion components
     """
-    assert len(maxRPcorr) == len(edgeFract) == len(csfFract) == len(HPC)
+    df['classification'] = 'accepted'
+    df['rationale'] = ''
     # Classify the ICs as motion or non-motion
 
     # Define criteria needed for classification (thresholds and hyperplane-parameters)
@@ -363,17 +366,22 @@ def classify(maxRPcorr, edgeFract, HFC, csfFract):
     hyp = np.array([-19.9751070082159, 9.95127547670627, 24.8333160239175])
 
     # Project edge & maxRPcorr feature scores to new 1D space
-    x = np.array([maxRPcorr, edgeFract])
+    x = np.array([df['max_rp_corr'], df['edge_fract']])
     proj = hyp[0] + np.dot(x.T, hyp[1:])
 
     # Classify the ICs
-    motionICs = np.squeeze(
-        np.array(
-            np.where((proj > 0) + (csfFract > thr_csf) + (HFC > thr_HFC))
-        )
-    )
+    bad_proj = np.squeeze(np.array(np.where(proj > 0)))
+    bad_hfc = np.squeeze(np.array(np.where(df['HFC'] > thr_HFC)))
+    bad_csf = np.squeeze(np.array(np.where(df['csf_fract'] > thr_csf)))
 
-    return motionICs
+    df.loc[bad_proj, 'classification'] = 'rejected'
+    df.loc[bad_proj, 'rationale'] += 'PROJ;'
+    df.loc[bad_hfc, 'classification'] = 'rejected'
+    df.loc[bad_hfc, 'rationale'] += 'HFC;'
+    df.loc[bad_csf, 'classification'] = 'rejected'
+    df.loc[bad_csf, 'rationale'] += 'CSF;'
+
+    return df
 
 
 def denoising(fslDir, inFile, outDir, mix_file, denType, denIdx):
