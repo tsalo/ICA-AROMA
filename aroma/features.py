@@ -12,10 +12,10 @@ import subprocess
 
 import numpy as np
 
-from .utils import cross_correlation, get_resource_path
+from .utils import correlate_columns, get_resource_path
 
 
-def feature_time_series(melmix, mc):
+def feature_time_series(mix, rp6):
     """
     This function extracts the maximum RP correlation feature scores.
     It determines the maximum robust correlation of each component time-series
@@ -31,21 +31,6 @@ def feature_time_series(melmix, mc):
     maxRPcorr:  Array of the maximum RP correlation feature scores for the components
     of the melodic_mix file
     """
-    # Read melodic mix file (IC time-series), subsequently define a set of squared time-series
-    if op.isfile(melmix):
-        mix = np.loadtxt(melmix)
-    elif isinstance(melmix, np.ndarray):
-        mix = melmix
-    else:
-        raise ValueError("Is bad")
-
-    # Read motion parameter file
-    if op.isfile(mc):
-        rp6 = np.loadtxt(mc)
-    elif isinstance(mc, np.ndarray):
-        rp6 = mc
-    else:
-        raise ValueError("Is bad")
     assert rp6.shape[0] == mix.shape[0]
 
     # Determine the derivatives of the RPs (add zeros at time-point zero)
@@ -55,39 +40,44 @@ def feature_time_series(melmix, mc):
     # Create an RP-model including the RPs and its derivatives
     rp12 = np.hstack((rp6, rp6_der))
 
-    # Add the squared RP-terms to the model
+    # add the squared RP-terms to the model
+    rp24 = np.hstack((rp12, rp12 ** 2))
+
     # add the fw and bw shifted versions
-    rp12_1fw = np.vstack((np.zeros(2 * nparams), rp12[:-1]))
-    rp12_1bw = np.vstack((rp12[1:], np.zeros(2 * nparams)))
-    rp_model = np.hstack((rp12, rp12_1fw, rp12_1bw))
+    # update to go through +- 5
+    # NOTE: This is for fast cross-correlation
+    rp_model = rp24.copy()
+    N_SHIFT = 5
+    for i_shift in range(1, N_SHIFT+1):
+        rp24_fw = np.vstack((np.zeros(i_shift, rp24.shape[1]), rp24[:-i_shift]))
+        rp24_bw = np.vstack((rp24[i_shift:], np.zeros(i_shift, rp24.shape[1])))
+        rp_model = np.hstack((rp_model, rp24_fw, rp24_bw))
 
     # Determine the maximum correlation between RPs and IC time-series
-    nsplits = 1000
-    nmixrows, nmixcols = mix.shape
-    nrows_to_choose = int(round(0.9 * nmixrows))
+    N_SPLITS = 1000
+    n_vols, n_components = mix.shape
+    nrows_to_choose = int(round(0.9 * n_vols))
 
     # Max correlations for multiple splits of the dataset (for a robust estimate)
-    max_correls = np.empty((nsplits, nmixcols))
-    for i in range(nsplits):
+    max_corrs = np.empty((N_SPLITS, n_components))
+    for i_split in range(N_SPLITS):
         # Select a random subset of 90% of the dataset rows (*without* replacement)
-        chosen_rows = random.sample(population=range(nmixrows), k=nrows_to_choose)
+        chosen_rows = random.sample(population=range(n_vols),
+                                    k=nrows_to_choose)
 
         # Combined correlations between RP and IC time-series, squared and non squared
-        correl_nonsquared = cross_correlation(mix[chosen_rows], rp_model[chosen_rows])
-        correl_squared = cross_correlation(
-            mix[chosen_rows] ** 2, rp_model[chosen_rows] ** 2
-        )
-        correl_both = np.hstack((correl_squared, correl_nonsquared))
+        corrs = correlate_columns(mix[chosen_rows], rp_model[chosen_rows])
 
         # Maximum absolute temporal correlation for every IC
-        max_correls[i] = np.abs(correl_both).max(axis=1)
+        max_corrs[i_split] = np.abs(corrs).max(axis=1)
 
     # Feature score is the mean of the maximum correlation over all the random splits
     # Avoid propagating occasional nans that arise in artificial test cases
-    return np.nanmean(max_correls, axis=0)
+    max_rp_corr = np.nanmean(max_corrs, axis=0)
+    return max_rp_corr
 
 
-def feature_frequency(melFTmix, TR):
+def feature_frequency(ft_data, freqs, TR):
     """
     This function extracts the high-frequency content feature scores.
     It determines the frequency, as fraction of the Nyquist frequency,
@@ -96,42 +86,37 @@ def feature_frequency(melFTmix, TR):
 
     Parameters
     ---------------------------------------------------------------------------------
-    melFTmix:   Full path of the melodic_FTmix text file
-    TR:     TR (in seconds) of the fMRI data (float)
+    ft_data : (F x C) :obj:`numpy.ndarray`
+        Fourier-transformed ICA component time series. Component by frequency array.
+    freqs : (F,) :obj:`numpy.ndarray`
+        Frequencies in Hz.
+    TR : :obj:`float`
+        TR in seconds of data
 
     Returns
     ---------------------------------------------------------------------------------
-    HFC:        Array of the HFC ('High-frequency content') feature scores
-    for the components of the melodic_FTmix file
+    HFC : (C,) :obj:`numpy.ndarray`
+        Array of the HFC ('high-frequency content') feature scores for the
+        components of the ft_data array
     """
+    assert ft_data.shape[0] == freqs.shape[0]
+
     # Determine sample frequency
     Fs = 1 / TR
 
     # Determine Nyquist-frequency
     Ny = Fs / 2
 
-    # Load melodic_FTmix file
-    if op.isfile(melFTmix):
-        FT = np.loadtxt(melFTmix)
-    elif isinstance(melFTmix, np.ndarray):
-        FT = melFTmix
-    else:
-        raise ValueError("Is bad")
-
-    # Determine which frequencies are associated with every row in the
-    # melodic_FTmix file  (assuming the rows range from 0Hz to Nyquist)
-    f = Ny * (np.array(list(range(1, FT.shape[0] + 1)))) / (FT.shape[0])
-
     # Only include frequencies higher than 0.01Hz
-    fincl = np.squeeze(np.array(np.where(f > 0.01)))
-    FT = FT[fincl, :]
-    f = f[fincl]
+    fincl = np.squeeze(np.array(np.where(freqs > 0.01)))
+    ft_data = ft_data[fincl, :]
+    freqs = freqs[fincl]
 
     # Set frequency range to [0-1]
-    f_norm = (f - 0.01) / (Ny - 0.01)
+    f_norm = (freqs - 0.01) / (Ny - 0.01)
 
     # For every IC; get the cumulative sum as a fraction of the total sum
-    fcumsum_fract = np.cumsum(FT, axis=0) / np.sum(FT, axis=0)
+    fcumsum_fract = np.cumsum(ft_data, axis=0) / np.sum(ft_data, axis=0)
 
     # Determine the index of the frequency with the fractional cumulative sum closest to 0.5
     idx_cutoff = np.argmin(np.abs(fcumsum_fract - 0.5), axis=0)
@@ -143,8 +128,8 @@ def feature_frequency(melFTmix, TR):
     return HFC
 
 
-def feature_spatial(fslDir, tempDir, aromaDir, melIC,
-                    csf_mask="auto", out_mask="auto", edge_mask="auto"):
+def feature_spatial(z_thresh_maps, csf_mask="auto", out_mask="auto",
+                    edge_mask="auto"):
     """
     This function extracts the spatial feature scores. For each IC it
     determines the fraction of the mixture modeled thresholded Z-maps
@@ -153,27 +138,24 @@ def feature_spatial(fslDir, tempDir, aromaDir, melIC,
 
     Parameters
     ----------
-    fslDir:     Full path of the bin-directory of FSL
-    tempDir:    Full path of a directory where temporary files can be stored (called 'temp_IC.nii.gz')
-    aromaDir:   Full path of the ICA-AROMA directory, containing the mask-files
-    (mask_edge.nii.gz, mask_csf.nii.gz & mask_out.nii.gz)
-    melIC:      Full path of the nii.gz file containing mixture-modeled
-    thresholded (p>0.5) Z-maps, registered to the MNI152 2mm template
+    z_thresh_maps : (X x Y x Z x C) :obj:`numpy.ndarray`
+        Array containing mixture-modeled thresholded (p>0.5) z-maps
+    csf_mask, out_mask, edge_mask : (X x Y x Z) :obj:`numpy.ndarray`
+        Masks of CSF, nonbrain, and brain edges
 
     Returns
     -------
-    edgeFract:  Array of the edge fraction feature scores for the components of the melIC file
-    csfFract:   Array of the CSF fraction feature scores for the components of the melIC file
+    edgeFract : (C,) :obj:`numpy.ndarray`
+        Array of the edge fraction feature scores for the components of the
+        melIC file
+    csfFract : (C,) :obj:`numpy.ndarray`
+        Array of the CSF fraction feature scores for the components of the
+        melIC file
     """
+    n_components = z_thresh_maps.shape[-1]
 
-    # Get the number of ICs
-    numICs = int(
-        subprocess.getoutput(
-            "{0} {1} | grep dim4 | head -n1 | awk '{print $2}'".format(
-                op.join(fslDir, "fslinfo"), melIC
-            )
-        )
-    )
+    # Get absolute values
+    z_thresh_maps = np.abs(z_thresh_maps)
 
     if csf_mask == "auto":
         csf_mask = op.join(get_resource_path(), "mask_csf.nii.gz")
@@ -191,116 +173,30 @@ def feature_spatial(fslDir, tempDir, aromaDir, melIC,
         assert op.isfile(edge_mask)
 
     # Loop over ICs
-    edgeFract = np.zeros(numICs)
-    csfFract = np.zeros(numICs)
-    for i in range(0, numICs):
-        # Define temporary IC-file
-        tempIC = op.join(tempDir, "temp_IC.nii.gz")
+    edge_fract = np.zeros(n_components)
+    csf_fract = np.zeros(n_components)
+    for i_comp in range(n_components):
+        comp_map = z_thresh_maps[..., i_comp]
+        z_total_sum = np.sum(comp_map)
+        if z_total_sum == 0:
+            LGR.warning('The spatial map of component {0} is empty. Please '
+                        'check!'.format(i_comp))
 
-        # Extract IC from the merged melodic_IC_thr2MNI2mm file
-        os.system(" ".join([op.join(fslDir, "fslroi"), melIC, tempIC, str(i), "1"]))
+        csf_data = comp_map[csf_mask]
+        z_csf_sum = np.sum(csf_data)
 
-        # Change to absolute Z-values
-        os.system(" ".join([op.join(fslDir, "fslmaths"), tempIC, "-abs", tempIC]))
+        edge_data = comp_map[edge_mask]
+        z_edge_sum = np.sum(edge_data)
 
-        # Get sum of Z-values within the total Z-map (calculate via the mean
-        # and number of non-zero voxels)
-        totVox = int(
-            subprocess.getoutput(
-                "{0} {1} -V | awk '{print $1}'".format(
-                    op.join(fslDir, "fslstats"), tempIC
-                )
-            )
-        )
-
-        if totVox != 0:
-            totMean = float(
-                subprocess.getoutput(
-                    "{0} {1} -M".format(op.join(fslDir, "fslstats"), tempIC)
-                )
-            )
-        else:
-            print("     - The spatial map of component {0} is empty. Please check!".format(i + 1))
-            totMean = 0
-
-        totSum = totMean * totVox
-
-        # Get sum of Z-values of the voxels located within the CSF
-        # (calculate via the mean and number of non-zero voxels)
-        csfVox = int(
-            subprocess.getoutput(
-                "{0} {1} -k {2} -V | awk '{print $1}'".format(
-                    op.join(fslDir, "fslstats"), tempIC, csf_mask
-                )
-            )
-        )
-        if csfVox != 0:
-            csfMean = float(
-                subprocess.getoutput(
-                    "{0} {1} -k {2} -M".format(
-                        op.join(fslDir, "fslstats"), tempIC, csf_mask
-                    )
-                )
-            )
-        else:
-            csfMean = 0
-
-        csfSum = csfMean * csfVox
-
-        # Get sum of Z-values of the voxels located within the Edge
-        # (calculate via the mean and number of non-zero voxels)
-        edgeVox = int(
-            subprocess.getoutput(
-                "{0} {1} -k {2} -V | awk '{print $1}'".format(
-                    op.join(fslDir, "fslstats"), tempIC, edge_mask
-                )
-            )
-        )
-        if edgeVox != 0:
-            edgeMean = float(
-                subprocess.getoutput(
-                    "{0} {1} -k {2} -M".format(
-                        op.join(fslDir, "fslstats"), tempIC, edge_mask
-                    )
-                )
-            )
-        else:
-            edgeMean = 0
-
-        edgeSum = edgeMean * edgeVox
-
-        # Get sum of Z-values of the voxels located outside the brain
-        # (calculate via the mean and number of non-zero voxels)
-        outVox = int(
-            subprocess.getoutput(
-                "{0} {1} -k {2} -V | awk '{print $1}'".format(
-                    op.join(fslDir, "fslstats"), tempIC, out_mask
-                )
-            )
-        )
-        if outVox != 0:
-            outMean = float(
-                subprocess.getoutput(
-                    "{0} {1} -k {2} -M".format(
-                        op.join(fslDir, "fslstats"), tempIC, out_mask
-                    )
-                )
-            )
-        else:
-            outMean = 0
-
-        outSum = outMean * outVox
+        out_data = comp_map[out_mask]
+        z_out_sum = np.sum(out_data)
 
         # Determine edge and CSF fraction
-        if totSum != 0:
-            edgeFract[i] = (outSum + edgeSum) / (totSum - csfSum)
-            csfFract[i] = csfSum / totSum
+        if z_total_sum != 0:
+            edge_fract[i_comp] = (z_out_sum + z_edge_sum) / (z_total_sum - z_csf_sum)
+            csf_fract[i_comp] = z_csf_sum / z_total_sum
         else:
-            edgeFract[i] = 0
-            csfFract[i] = 0
+            edge_fract[i_comp] = 0.
+            csf_fract[i_comp] = 0.
 
-    # Remove the temporary IC-file
-    os.remove(tempIC)
-
-    # Return feature scores
-    return edgeFract, csfFract
+    return edge_fract, csf_fract

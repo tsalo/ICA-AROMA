@@ -66,13 +66,36 @@ def load_motpars(file_, source='auto'):
     return motpars
 
 
-def cross_correlation(a, b):
-    """Cross Correlations between columns of two matrices"""
+def correlate_columns(a, b):
+    """Correlations between columns of two matrices"""
     assert a.ndim == b.ndim == 2
     _, ncols_a = a.shape
     # nb variables in columns rather than rows hence transpose
     # extract just the cross terms between cols in a and cols in b
     return np.corrcoef(a.T, b.T)[:ncols_a, ncols_a:]
+
+
+def get_spectrum(data: np.array, tr: float):
+    """
+    Returns the power spectrum and corresponding frequencies when provided
+    with a component time course and repitition time.
+
+    Parameters
+    ----------
+    data : (T,) array_like
+        A timeseries T, on which you would like to perform an fft.
+    tr : :obj:`float`
+        Repetition time (TR) of the data
+
+    Returns
+    -------
+    spectra
+    """
+    # adapted from @dangom
+    power_spectrum = np.abs(np.fft.rfft(data)) ** 2
+    freqs = np.fft.rfftfreq(power_spectrum.shape[-1] * 2 - 1, tr)
+    idx = np.argsort(freqs)
+    return power_spectrum[..., idx], freqs[idx]
 
 
 def get_resource_path():

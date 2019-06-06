@@ -12,6 +12,42 @@ import subprocess
 import numpy as np
 
 
+def run_aroma(mix_file, z_maps_file, motpars_file, t_r):
+    if op.isfile(mix_file):
+        mix = np.loadtxt(mix_file)
+    elif isinstance(mix_file, np.ndarray):
+        mix = mix_file
+    else:
+        raise ValueError("Is bad")
+
+    # Read motion parameter file
+    if op.isfile(motpars_file):
+        rp6 = np.loadtxt(motpars_file)
+    elif isinstance(motpars_file, np.ndarray):
+        rp6 = motpars_file
+    else:
+        raise ValueError("Is bad")
+
+    if op.isfile(z_maps_file):
+        z_maps_img = nib.load(z_maps_file)
+        z_maps = z_maps_img.get_data()
+    elif isinstance(z_maps_file, np.ndarray):
+        z_maps = z_maps_file
+    else:
+        raise ValueError("Is bad")
+
+    assert z_maps.shape[-1] == mix.shape[1]
+    assert mix.shape[0] == rp6.shape[0]
+
+    ft_data, freqs = get_spectrum(mix, t_r)
+    max_rp_corr = features.feature_time_series(mix, rp6)
+    HFC = feature_frequency(ft_data, freqs, t_r)
+    edge_fract, csf_fract = feature_spatial(
+        z_maps, csf_mask="auto", out_mask="auto", edge_mask="auto")
+    classifications = classify(max_rp_corr, edge_fract, HFC, csf_fract)
+    return classifications
+
+
 def runICA(fslDir, inFile, outDir, melDirIn, mask, dim, TR):
     """
     This function runs MELODIC and merges the mixture modeled thresholded
@@ -295,7 +331,7 @@ def register2MNI(fslDir, inFile, outFile, affmat, warp):
         )
 
 
-def classification(maxRPcorr, edgeFract, HFC, csfFract):
+def classify(maxRPcorr, edgeFract, HFC, csfFract):
     """
     This function classifies a set of components into motion and
     non-motion components based on four features;
@@ -340,7 +376,7 @@ def classification(maxRPcorr, edgeFract, HFC, csfFract):
     return motionICs
 
 
-def denoising(fslDir, inFile, outDir, melmix, denType, denIdx):
+def denoising(fslDir, inFile, outDir, mix_file, denType, denIdx):
     """
     This function classifies the ICs based on the four features;
     maximum RP correlation, high-frequency content, edge-fraction and CSF-fraction
@@ -350,7 +386,7 @@ def denoising(fslDir, inFile, outDir, melmix, denType, denIdx):
     fslDir:     Full path of the bin-directory of FSL
     inFile:     Full path to the data file (nii.gz) which has to be denoised
     outDir:     Full path of the output directory
-    melmix:     Full path of the melodic_mix text file
+    mix_file:     Full path of the melodic_mix text file
     denType:    Type of requested denoising ('aggr': aggressive, 'nonaggr':
     non-aggressive, 'both': both aggressive and non-aggressive
     denIdx:     Indices of the components that should be regressed out
@@ -382,7 +418,7 @@ def denoising(fslDir, inFile, outDir, melmix, denType, denIdx):
                     [
                         op.join(fslDir, "fsl_regfilt"),
                         "--in=" + inFile,
-                        "--design=" + melmix,
+                        "--design=" + mix_file,
                         '--filter="' + denIdxStrJoin + '"',
                         "--out=" + op.join(outDir, "denoised_func_data_nonaggr.nii.gz"),
                     ]
@@ -396,7 +432,7 @@ def denoising(fslDir, inFile, outDir, melmix, denType, denIdx):
                     [
                         op.join(fslDir, "fsl_regfilt"),
                         "--in=" + inFile,
-                        "--design=" + melmix,
+                        "--design=" + mix_file,
                         '--filter="' + denIdxStrJoin + '"',
                         "--out=" + op.join(outDir, "denoised_func_data_aggr.nii.gz"),
                         "-a",
