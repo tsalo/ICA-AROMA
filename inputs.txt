@@ -1,0 +1,25 @@
+Requirements:
+
+files:
+- weight maps
+- motion parameters
+- func2anat affine
+- anat2standard warp
+- mask
+
+values:
+- tr
+
+resources:
+- csf mask in MNI space
+- non-brain mask in MNI space
+- edge(?) mask in MNI space
+  - This is key. We need to create this in native space.
+
+steps:
+1. Run ICA on preprocessed data with MELODIC
+  - Uses --mmthresh (mixture modeling based inference)
+2. Register ICA weight maps to MNI using aff and warp
+3. Compute spatial features
+4. Compute time series features
+5. Compute frequency features
